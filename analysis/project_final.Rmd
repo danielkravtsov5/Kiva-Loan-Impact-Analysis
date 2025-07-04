@@ -465,3 +465,13 @@ We conducted both ANOVA and linear regression analyses to ensure robustness of f
 Our project faced several practical and conceptual challenges. First, working with a very large dataset meant that many results were statistically significant — even when effect sizes were small. This required careful interpretation and the use of statistical modeling (via R) to distinguish between signal and noise. Second, we were surprised to find that the sector alone had minimal explanatory power, and that the interaction between country and sector, though statistically significant, did not produce as strong a relationship as initially expected.
 
 If given an additional two months, we would explore longitudinal borrower behavior — specifically, whether individuals who received high-impact loans later required fewer or smaller loans over time. This could help assess whether short-term, small loans provide sustained financial independence, compared to longer or larger loans. It would also allow us to examine borrower retention, dependence, and growth trajectories, offering a more comprehensive understanding of impact beyond single-loan repayment. In addition, we would incorporate measures of country-level “buying power” or purchasing power parity (PPP) to adjust for the real-world value of loan amounts across different regions. This would help account for the fact that the same nominal loan can have vastly different economic effects depending on local cost structures, and could improve the precision of our impact score model. 
+
+
+Link to GITHUB repository:
+https://github.com/danielkravtsov5/Kiva-Loan-Impact-Analysis
+
+Link to out Data:
+https://drive.google.com/drive/folders/1ogLhA9Z7_yoDWhh1HXO-aKpL6AHTG64L
+
+Appendix:
+https://drive.google.com/drive/folders/1ogLhA9Z7_yoDWhh1HXO-aKpL6AHTG64L?usp=share_link
