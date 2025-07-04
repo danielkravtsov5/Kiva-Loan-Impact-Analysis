@@ -1,0 +1,467 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(ggplot2)
+theme_minimal(base_size = 10)
+
+```
+
+## 1. Introduction
+Kiva is a global nonprofit that connects individual lenders with low-income borrowers through microloans that support entrepreneurship, agriculture, and education. A key challenge is allocating limited capital to loans that are repaid quickly and reliably, allowing lenders to recycle funds and increase social impact.
+
+We define ‘high-impact’ loans as small, short-term loans that are repaid fast. Quick repayment reflects borrower reliability and sharper creditworthiness compared to longer-term loans, where outside factors may interfere.
+
+While most research focuses on long-term default risk, we focus on short-term repayment efficiency, which is crucial in microfinance.
+
+This is especially relevant for peer-to-peer lending platforms, where lenders have limited borrower data. Fast loan outcomes provide quicker feedback, improve risk models, and help reach underbanked communities, expanding financial inclusion.
+
+The challenge lies in limited data, diverse regional factors, and difficulty in identifying true causality.
+
+Our key question: Which country-sector combinations yield the highest repayment impact—small, fast, fully repaid loans? Quick repayments show that borrowers can generate income fast, enabling capital to be recycled to others.
+
+By analyzing hundreds of thousands of loans, we aim to find patterns that help guide more efficient and impactful lending on Kiva.
+
+
+
+## 2. Data overview
+The dataset was compiled by Dr. Moran Koren using publicly available data from Kiva.org and was shared with students in the "Introduction to Data Analysis" course to support predictive and explanatory modeling related to global microfinance.
+
+Each row represents a single loan issued through the Kiva platform. The data combines information from multiple original sources, including loan details, country information, and payment records.
+
+The dataset includes 424,097 loans after cleaning, each linked to a borrower’s country and sector. Key feature groups include loan characteristics (amount, funded amount, duration, disbursal date), repayment behavior (status, completion, duration), geographic data (country, region), and sector metadata (e.g., agriculture, retail, services).
+
+These features allow us to examine repayment patterns across countries and sectors, helping identify combinations associated with the highest repayment efficiency.
+
+```{r}
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(reshape2)
+library(broom) 
+
+
+loans <- fread("/Users/danielkravtsov/Desktop/2nd_year/הנדסת נתונים/kivadata_org/big_table.csv")
+
+```
+
+
+```{r}
+library(data.table)
+library(dplyr)
+library(lubridate)
+
+# Preprocess: convert dates
+loans <- loans %>%
+  mutate(
+    funded_date = as.Date(`Funded Date`),
+    paid_date = as.Date(`Paid Date`)
+  )
+
+# Filter and calculate repayment metrics
+loans <- loans %>%
+  filter(!is.na(funded_date), !is.na(paid_date), !is.na(`Loan Amount`)) %>%
+  mutate(
+    repaid_fully = ifelse(Status == "paid", 1, 0),
+    repayment_days = as.numeric(difftime(paid_date, funded_date, units = "days")),
+    impact_score = ifelse(repaid_fully == 1 & repayment_days > 0,
+                          1 / (`Loan Amount` * repayment_days), 0),
+    impact_score_scaled = case_when(
+      impact_score == 0 ~ 0,
+      impact_score > 0 ~ percent_rank(impact_score)
+    )
+  )
+
+top_countries <- loans %>%
+  count(Country, sort = TRUE) %>%
+  slice_head(n = 30) %>%
+  pull(Country)
+
+top_sectors <- loans %>%
+  count(Sector, sort = TRUE) %>%
+  slice_head(n = 15) %>%
+  pull(Sector)
+
+loans_filtered <- loans %>%
+  filter(Country %in% top_countries, Sector %in% top_sectors)
+```
+
+This creates impact_score_scaled as a proxy for loan quality.
+
+It considers full repayment, short duration, and low size.
+
+Using percent_rank() gives us a normalized 0-1 scale across all loans.
+
+Descriptive Visualizations:
+
+```{r correlation_heatmap, fig.width=6, fig.height=3, fig.align='center', echo=FALSE}
+library(patchwork)
+# Correlation heatmap of numeric vars
+numeric_vars <- loans %>%
+  select(`Loan Amount`, repayment_days, impact_score_scaled)
+
+cor_matrix <- cor(numeric_vars, use = "complete.obs", method = "spearman")
+heatmap_data <- melt(cor_matrix)
+
+p1 <- ggplot(heatmap_data, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value, 2)), color = "white", size = 4) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  labs(title = "Correlation Heatmap") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+top_combos <- loans %>%
+  group_by(Country, Sector) %>%
+  filter(n() > 100) %>%
+  summarise(mean_impact = mean(impact_score_scaled, na.rm = TRUE)) %>%
+  mutate(combo = paste(Country, Sector, sep = " - "))
+
+# Bar plot
+p3 <- ggplot(top_combos, aes(x = reorder(combo, mean_impact), y = mean_impact)) +
+  geom_col(fill = "darkseagreen") +
+  coord_flip() +
+  labs(title = "Avg Impact Score by Country-Sector",
+       y = "Mean Impact", x = NULL) +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.y = element_blank())
+
+p1+p3
+
+```
+
+
+## 3. Methods and results
+Purpose of the ANOVA
+
+To evaluate factors influencing microloan effectiveness, we conducted a two-way ANOVA using impact_score_scaled as the dependent variable. We tested the effects of borrower Country, loan Sector, and their interaction on repayment impact. This approach, confirmed as suitable by our teaching assistant, helps identify significant group-level effects and interactions in the data.
+
+Two-Way ANOVA:
+```{r}
+# Prepare filtered dataset
+group_counts <- loans %>%
+  group_by(Country, Sector) %>%
+  filter(n() > 100) %>%
+  ungroup() %>%
+  mutate(
+    Country = factor(Country),
+    Sector = factor(Sector)
+  )
+
+library(kableExtra)
+
+# ANOVA by Country
+anova_country <- aov(impact_score_scaled ~ Country, data = group_counts)
+anova_country_df <- as.data.frame(summary(anova_country)[[1]]) %>%
+  tibble::rownames_to_column("Effect")
+
+r2_country <- sum(anova_country_df$`Sum Sq`[1]) / sum(anova_country_df$`Sum Sq`)
+
+anova_country_df <- bind_rows(
+  anova_country_df,
+  data.frame(
+    Effect = "Model R-squared",
+    Df = NA,
+    `Sum Sq` = NA,
+    `Mean Sq` = NA,
+    `F value` = NA,
+    `Pr(>F)` = round(r2_country, 4)
+  )
+)
+
+knitr::kable(anova_country_df, digits = 3, caption = "ANOVA Table: Country only (with R-squared)") %>%
+  kable_styling(font_size = 6, latex_options = c("hold_position"))
+
+# ANOVA by Sector
+anova_sector <- aov(impact_score_scaled ~ Sector, data = group_counts)
+anova_sector_df <- as.data.frame(summary(anova_sector)[[1]]) %>%
+  tibble::rownames_to_column("Effect")
+
+r2_sector <- sum(anova_sector_df$`Sum Sq`[1]) / sum(anova_sector_df$`Sum Sq`)
+
+anova_sector_df <- bind_rows(
+  anova_sector_df,
+  data.frame(
+    Effect = "Model R-squared",
+    Df = NA,
+    `Sum Sq` = NA,
+    `Mean Sq` = NA,
+    `F value` = NA,
+    `Pr(>F)` = round(r2_sector, 4)
+  )
+)
+
+knitr::kable(anova_sector_df, digits = 3, caption = "ANOVA Table: Sector only (with R-squared)") %>%
+  kable_styling(font_size = 6, latex_options = c("hold_position"))
+
+# ANOVA interaction Country x Sector
+anova_interaction <- aov(impact_score_scaled ~ Country * Sector, data = group_counts)
+anova_interaction_df <- as.data.frame(summary(anova_interaction)[[1]]) %>%
+  tibble::rownames_to_column("Effect")
+
+ss_total <- sum(anova_interaction_df$`Sum Sq`)
+ss_model <- sum(anova_interaction_df$`Sum Sq`[1:3])
+r2_interaction <- ss_model / ss_total
+
+anova_interaction_df <- bind_rows(
+  anova_interaction_df,
+  data.frame(
+    Effect = "Model R-squared",
+    Df = NA,
+    `Sum Sq` = NA,
+    `Mean Sq` = NA,
+    `F value` = NA,
+    `Pr(>F)` = round(r2_interaction, 4)
+  )
+)
+
+knitr::kable(anova_interaction_df, digits = 3, caption = "ANOVA Table: Country x Sector Interaction (with R-squared)") %>%
+  kable_styling(font_size = 6, latex_options = c("hold_position"))
+
+```
+
+
+```{r top20-impactscore, fig.width=20, fig.height=6, out.width='\\linewidth', fig.align='center', echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)      # data manipulation
+library(ggplot2)    # plotting
+library(gridExtra)  # arranging multiple grobs
+library(grid)       # low-level grid functions
+
+# 1. Prepare top 10 countries by average impact score
+top_countries <- loans %>%
+  group_by(Country) %>%
+  summarise(mean_impact = mean(impact_score_scaled, na.rm = TRUE)) %>%
+  arrange(desc(mean_impact)) %>%
+  slice_head(n = 10) %>%
+  mutate(
+    type = "Country",         # mark as Country
+    name = Country            # use Country as display name
+  )
+
+# 2. Prepare top 10 sectors by average impact score
+top_sectors <- loans %>%
+  group_by(Sector) %>%
+  summarise(mean_impact = mean(impact_score_scaled, na.rm = TRUE)) %>%
+  arrange(desc(mean_impact)) %>%
+  slice_head(n = 10) %>%
+  mutate(
+    type = "Sector",          # mark as Sector
+    name = Sector             # use Sector as display name
+  )
+
+# 3. Prepare top 10 country–sector combos (with at least 50 samples)
+top_country_sector <- loans %>%
+  group_by(Country, Sector) %>%
+  filter(n() >= 50) %>%                             # require minimum sample size
+  summarise(mean_impact = mean(impact_score_scaled, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    name = paste(Country, Sector, sep = " - "),     # combine country and sector
+    type = "Country-Sector"                         # mark as combo
+  ) %>%
+  arrange(desc(mean_impact)) %>%
+  slice_head(n = 10)
+
+# 4. Combine all three datasets into one frame for plotting
+top_impact <- bind_rows(
+  top_countries[, c("name", "mean_impact", "type")],
+  top_sectors[,   c("name", "mean_impact", "type")],
+  top_country_sector[, c("name", "mean_impact", "type")]
+)
+
+# 5. Ensure consistent facet ordering
+top_impact$type <- factor(top_impact$type, levels = c("Country", "Sector", "Country-Sector"))
+
+# 6. Create the bar plot with value labels
+p <- ggplot(top_impact, aes(x = mean_impact, y = reorder(name, mean_impact), fill = type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = round(mean_impact, 2)),  # add numeric labels
+            hjust = -0.1, size = 3) +             # adjust horizontal position
+  facet_wrap(~type, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Top 10 by Average Impact Score",
+    x     = "Mean Scaled Impact Score",
+    y     = NULL
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title     = element_text(hjust = 0.5, face = "bold"),
+    strip.text     = element_text(size = 13),
+    axis.text.y    = element_text(size = 10),
+    axis.text.x    = element_text(angle = 0, hjust = 0.5)
+  ) +
+  coord_cartesian(clip = "off") +  # allow labels to extend beyond plot area
+  scale_fill_manual(
+    values = c(
+      "Country"         = "#1f78b4",
+      "Sector"          = "#33a02c",
+      "Country-Sector"  = "#e31a1c"
+    )
+  )
+
+
+```
+Key Results:
+The results show that Country is the strongest predictor of repayment impact, explaining approximately 37.5% of the variance in impact scores. In comparison, Sector accounts for only 1.7%, though it remains statistically significant. The interaction between Country and Sector adds a modest 2% explanatory power. The full interaction model reaches an R-squared of 0.393, meaning that around 39% of the variation in repayment outcomes can be explained by these combined categorical factors.
+
+Interpretation:
+These findings suggest that geographic context plays a dominant role in determining loan success, likely reflecting differences in economic infrastructure, borrower behavior, and financial systems across countries. While Sector on its own has limited explanatory power, its impact depends heavily on the country in which the loan operates. This interaction effect implies that the same type of loan can lead to different outcomes depending on local conditions. Additionally, differences in the "buying power" of the same nominal loan amount across countries may influence the ability of borrowers to repay quickly and fully.
+
+Implications:
+The analysis supports the idea that certain Country-Sector combinations consistently produce higher impact loans. To improve lending efficiency and maximize social return, microlending platforms like Kiva should consider incorporating these interaction effects into their prioritization and recommendation systems. Assessing loans based on country-specific risk and opportunity appears more informative and actionable than sector-based classification alone.
+
+Multiple Linear Regression:
+To further quantify these effects, we built multiple linear regression models using the scaled impact score as the dependent variable. The first model, using only Country as a predictor, achieved an R-squared of approximately 0.375, confirming geography’s strong influence. The second model, using only Sector, showed a much lower R-squared of around 0.017, indicating minimal explanatory power. The full interaction model, which included both Country and Sector and their interaction, reached an R-squared of approximately 0.393, confirming that repayment impact is shaped not just by geography or sector alone but by their combination.
+
+```{r, echo=FALSE, results="hide", fig.width=6, fig.height=2.5}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(broom)
+
+# Fit the linear regression model including interaction
+lm_interaction <- lm(impact_score_scaled ~ Country * Sector, data = loans_filtered)
+coefs <- broom::tidy(lm_interaction, conf.int = TRUE)
+
+# ---------------------------
+# COUNTRY COEFFICIENTS – get exactly 12 evenly spaced
+country_coefs <- coefs %>%
+  filter(grepl("^Country", term) & !grepl(":", term)) %>%
+  mutate(term_clean = gsub("Country", "", term))
+
+sorted_country <- country_coefs %>%
+  arrange(desc(abs(estimate)))
+
+n_country <- nrow(sorted_country)
+selected_country <- sorted_country[round(seq(1, n_country, length.out = 12)), ]
+
+# ---------------------------
+# SECTOR COEFFICIENTS – show all
+sector_coefs <- coefs %>%
+  filter(grepl("^Sector", term) & !grepl(":", term)) %>%
+  mutate(term_clean = gsub("Sector", "", term))
+
+# ---------------------------
+# INTERACTION COEFFICIENTS – still every 5th
+interaction_coefs <- coefs %>%
+  filter(grepl("Country.*:Sector", term)) %>%
+  mutate(
+    term_clean = gsub("Country", "", term),
+    term_clean = gsub(":Sector", " x ", term_clean)
+  )
+
+sorted_interaction <- interaction_coefs %>%
+  arrange(desc(abs(estimate)))
+
+selected_interaction <- sorted_interaction[seq(10, min(100, nrow(sorted_interaction)), by = 10), ]
+
+# ---------------------------
+# PLOTS
+p1 <- ggplot(selected_country, aes(x = estimate, y = reorder(term_clean, estimate))) +
+  geom_point(color = "darkgreen", size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.25, color = "gray40") +
+  labs(title = "12 Evenly Spread Countries by Effect", x = "Estimated Effect", y = "Country") +
+  theme_minimal(base_size = 9)
+
+p2 <- ggplot(sector_coefs, aes(x = estimate, y = reorder(term_clean, estimate))) +
+  geom_point(color = "darkorange", size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.25, color = "gray40") +
+  labs(title = "All Sector Coefficients", x = "Estimated Effect", y = "Sector") +
+  theme_minimal(base_size = 9)
+
+p3 <- ggplot(selected_interaction, aes(x = estimate, y = reorder(term_clean, estimate))) +
+  geom_point(color = "purple", size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.25, color = "gray40") +
+  labs(title = "Every 10th: Country x Sector Interactions", x = "Estimated Effect", y = "Interaction") +
+  theme_minimal(base_size = 9)
+
+(p1+p2)
+
+p3
+```
+\newpage
+Comparison: ANOVA vs Linear Regression
+```{r, echo=FALSE, results="hide", fig.width=5, fig.height=2.5, out.width='\\linewidth', fig.align='center', echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+# Fit the model (assuming already done)
+lm_main <- lm(impact_score_scaled ~ Country * Sector, data = loans_filtered)
+
+# Get indices of rows actually used in the model (removes NA rows)
+used_rows <- as.numeric(names(resid(lm_main)))
+
+# Create a clean dataframe with only the used rows
+model_data <- loans_filtered[used_rows, ] %>%
+  mutate(
+    residuals = resid(lm_main),
+    fitted = fitted(lm_main),
+    abs_error = abs(impact_score_scaled - fitted)
+  )
+
+# R-squared comparison plot (reuse your existing r2_country, r2_sector, r2_interaction)
+r2_df <- data.frame(
+  Model = c("ANOVA Country only", "ANOVA Sector only", "ANOVA Country x Sector", 
+            "Linear Regression Country only", "Linear Regression Sector only", "Linear Regression Country+Sector"),
+  R2 = c(
+    round(r2_country, 4),
+    round(r2_sector, 4),
+    round(r2_interaction, 4),
+    summary(lm(impact_score_scaled ~ Country, data=loans_filtered))$r.squared,
+    summary(lm(impact_score_scaled ~ Sector, data=loans_filtered))$r.squared,
+    summary(lm(impact_score_scaled ~ Country + Sector, data=loans_filtered))$r.squared
+  )
+)
+
+p1 <- ggplot(r2_df, aes(x = reorder(Model, R2), y = R2, fill = Model)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "R-squared Comparison: \nANOVA vs Linear Regression",
+       y = "R-squared",
+       x = "") +
+ theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 6, face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 6)
+  )
+
+# Residuals plot
+p2 <- ggplot(model_data, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals Plot: \nFitted Values vs Residuals",
+       x = "Fitted Values (Predicted Impact Score)",
+       y = "Residuals (Prediction Error)") +
+   theme_minimal() +
+  theme(
+    plot.title = element_text(size = 6, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 6, hjust = 0.5),
+    axis.text = element_text(size = 6)
+  )
+
+# Mean Absolute Error by Country
+error_by_country <- model_data %>%
+  group_by(Country) %>%
+  summarise(mean_abs_error = mean(abs_error, na.rm = TRUE)) %>%
+  arrange(desc(mean_abs_error)) %>%
+  slice_head(n = 25)
+
+
+# Arrange plots side by side
+(p1 + p2) + plot_layout(ncol = 2, widths = c(1,1))
+```
+We conducted both ANOVA and linear regression analyses to ensure robustness of findings from different statistical perspectives. While ANOVA confirms significant group-level differences (especially by country), regression provides interpretable coefficient estimates for each Country-Sector pair. Notably, both approaches yielded nearly identical R^2 values, reinforcing the conclusion that country-level variation is the dominant driver of loan impact.Notably, both approaches yielded nearly identical R^2 values, reinforcing the conclusion that country-level variation is the dominant driver of loan impact. We also examined the residuals plot from the regression model to assess model fit. The residuals are symmetrically distributed around zero without any obvious patterns, indicating that the model’s predictions are unbiased and the assumptions of linear regression are reasonably met. 
+
+## 4. Limitations and Future Work
+
+Our project faced several practical and conceptual challenges. First, working with a very large dataset meant that many results were statistically significant — even when effect sizes were small. This required careful interpretation and the use of statistical modeling (via R) to distinguish between signal and noise. Second, we were surprised to find that the sector alone had minimal explanatory power, and that the interaction between country and sector, though statistically significant, did not produce as strong a relationship as initially expected.
+
+If given an additional two months, we would explore longitudinal borrower behavior — specifically, whether individuals who received high-impact loans later required fewer or smaller loans over time. This could help assess whether short-term, small loans provide sustained financial independence, compared to longer or larger loans. It would also allow us to examine borrower retention, dependence, and growth trajectories, offering a more comprehensive understanding of impact beyond single-loan repayment. In addition, we would incorporate measures of country-level “buying power” or purchasing power parity (PPP) to adjust for the real-world value of loan amounts across different regions. This would help account for the fact that the same nominal loan can have vastly different economic effects depending on local cost structures, and could improve the precision of our impact score model. 
